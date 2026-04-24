@@ -57,6 +57,15 @@ def test_send_messages_delivery_mode_persistente():
         assert properties.delivery_mode == 2
 
 
+def test_send_messages_respeta_count_personalizado():
+    mock_channel = _make_channel()
+    with patch('pika.BlockingConnection'):
+        producer.send_messages(mock_channel, count=5)
+    assert mock_channel.basic_publish.call_count == 5
+    bodies = [c.kwargs['body'] for c in mock_channel.basic_publish.call_args_list]
+    assert bodies == [f"Tarea {i}" for i in range(1, 6)]
+
+
 # ---------------------------------------------------------------------------
 # Tests de connect
 # ---------------------------------------------------------------------------

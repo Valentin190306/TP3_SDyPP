@@ -31,7 +31,11 @@ Esperar hasta que el campo `STATUS` de `rabbitmq` muestre `healthy`.
 ### 3. Correr el producer
 
 ```bash y powershell
+# Default: 10 mensajes
 docker compose run producer
+
+# '<NUM_MESSAGES>' mensajes
+docker compose run -e MESSAGE_COUNT=<NUM_MESSAGES> producer
 ```
 
 ### 4. Ver los logs de los consumers
@@ -71,6 +75,7 @@ pytest tests/test_integration.py -v
 ### Ejecutar todas las pruebas
 
 ```bash y powershell
+docker compose up rabbitmq -d
 pytest tests/ -v
 ```
 

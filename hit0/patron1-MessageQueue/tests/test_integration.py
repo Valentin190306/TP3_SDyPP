@@ -52,7 +52,8 @@ def test_producer_publica_10_mensajes_en_cola():
     message_count = result.method.message_count
     conn.close()
 
-    assert message_count == 10
+    assert message_count == producer.MESSAGE_COUNT
+
 
 
 
