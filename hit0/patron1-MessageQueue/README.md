@@ -8,15 +8,21 @@ El patrón **Message Queue punto a punto** desacopla productores y consumidores 
 
 ## Cómo ejecutar
 
-### 1. Levantar RabbitMQ y consumers (escalar a 2 instancias)
+### 0. Dirigirse al directorio del patrón
 
-```bash
-docker compose up --scale consumer=2 -d
+```bash y powershell
+cd hit0/patron1-MessageQueue
+```
+
+### 1. Levantar RabbitMQ y consumers (escalar a '<NUM_INSTANCES>' instancias)
+
+```bash y powershell
+docker compose up --scale consumer='<NUM_INSTANCES>' -d
 ```
 
 ### 2. Verificar que RabbitMQ esté healthy
 
-```bash
+```bash y powershell
 docker compose ps
 ```
 
@@ -24,21 +30,68 @@ Esperar hasta que el campo `STATUS` de `rabbitmq` muestre `healthy`.
 
 ### 3. Correr el producer
 
-```bash
+```bash y powershell
 docker compose run producer
 ```
 
 ### 4. Ver los logs de los consumers
 
-```bash
+```bash y powershell
 docker compose logs consumer
 ```
 
 ### 5. Bajar todo
 
-```bash
+```bash y powershell
 docker compose down
 ```
+
+---
+
+## Pruebas y Logging
+
+### Ejecutar pruebas unitarias
+
+> No requieren RabbitMQ corriendo.
+
+```bash y powershell
+pip install -r requirements-dev.txt
+pytest tests/test_producer.py -v
+```
+
+### Ejecutar pruebas de integración
+
+> Requieren RabbitMQ corriendo. Se saltan automáticamente si no hay broker disponible.
+
+```bash y powershell
+docker compose up rabbitmq -d
+pytest tests/test_integration.py -v
+```
+
+### Ejecutar todas las pruebas
+
+```bash y powershell
+pytest tests/ -v
+```
+
+### Logs
+
+Los logs se generan en `./logs/` en el host (montado como volumen Docker).
+
+| Archivo        | Contenido                                                   |
+| -------------- | ----------------------------------------------------------- |
+| `producer.log` | Actividad del producer (mensajes enviados, reintentos)      |
+| `consumer.log` | Actividad de cada consumer (mensajes recibidos, reintentos) |
+
+Formato de cada línea:
+
+```
+timestamp | nombre | nivel | mensaje
+```
+
+### Archivos ignorados
+
+El directorio `./logs/` y todos los archivos `*.log` están en `.gitignore` y no se commitean al repositorio.
 
 ---
 

@@ -1,33 +1,36 @@
 import os
 import time
 import pika
+from logger import get_logger
 
 RABBITMQ_HOST = os.environ.get("RABBITMQ_HOST", "rabbitmq")
 QUEUE_NAME = "task_queue"
 MAX_RETRIES = 10
 
+logger = get_logger('producer')
 
-def connect_with_retry():
+
+def connect() -> pika.BlockingConnection:
     for attempt in range(MAX_RETRIES):
         try:
             connection = pika.BlockingConnection(
                 pika.ConnectionParameters(host=RABBITMQ_HOST)
             )
-            print(f"[Producer] Conectado a RabbitMQ en '{RABBITMQ_HOST}'")
+            logger.info(f"Conectado a RabbitMQ en '{RABBITMQ_HOST}'")
             return connection
         except pika.exceptions.AMQPConnectionError as e:
             delay = 2 ** attempt
-            print(f"[Producer] Intento {attempt + 1}/{MAX_RETRIES} fallido. Reintentando en {delay}s... ({e})")
+            logger.warning(
+                f"Intento {attempt + 1}/{MAX_RETRIES} fallido. "
+                f"Reintentando en {delay}s... ({e})"
+            )
             time.sleep(delay)
-    raise RuntimeError(f"[Producer] No se pudo conectar a RabbitMQ tras {MAX_RETRIES} intentos.")
+    logger.error(f"No se pudo conectar a RabbitMQ tras {MAX_RETRIES} intentos.")
+    raise RuntimeError(f"No se pudo conectar a RabbitMQ tras {MAX_RETRIES} intentos.")
 
 
-def main():
-    connection = connect_with_retry()
-    channel = connection.channel()
-
+def send_messages(channel) -> None:
     channel.queue_declare(queue=QUEUE_NAME, durable=True)
-
     for i in range(1, 11):
         message = f"Tarea {i}"
         channel.basic_publish(
@@ -38,11 +41,12 @@ def main():
                 delivery_mode=2,
             ),
         )
-        print(f"[Producer] Enviado: {message}")
-
-    connection.close()
-    print("[Producer] Todos los mensajes enviados. Conexión cerrada.")
+        logger.info(f"Enviado: {message}")
 
 
 if __name__ == "__main__":
-    main()
+    connection = connect()
+    channel = connection.channel()
+    send_messages(channel)
+    connection.close()
+    logger.info("Todos los mensajes enviados. Conexión cerrada.")

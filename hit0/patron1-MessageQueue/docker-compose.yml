@@ -20,6 +20,8 @@ services:
     environment:
       - RABBITMQ_HOST=rabbitmq
     restart: unless-stopped
+    volumes:
+      - ./logs:/app/logs
 
   producer:
     build:
@@ -32,3 +34,5 @@ services:
       - RABBITMQ_HOST=rabbitmq
     profiles:
       - producer
+    volumes:
+      - ./logs:/app/logs
