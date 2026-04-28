@@ -3,6 +3,9 @@ import os
 import time
 import json
 import socket
+import logger
+
+logger = logger.get_logger("subscriber")
 
 def connect():
     host = os.getenv('RABBITMQ_HOST', 'rabbitmq')
@@ -13,9 +16,9 @@ def connect():
             return connection
         except pika.exceptions.AMQPConnectionError:
             delay = 2 ** i
-            print(f"[Subscriber] Error connecting to RabbitMQ. Retrying in {delay} seconds...", flush=True)
+            logger.error(f"Error connecting to RabbitMQ. Retrying in {delay} seconds...")
             time.sleep(delay)
-    raise Exception("[Subscriber] Could not connect to RabbitMQ after max retries.")
+    raise Exception("Could not connect to RabbitMQ after max retries.")
 
 def callback(ch, method, properties, body):
     node_id = socket.gethostname()
@@ -25,7 +28,7 @@ def callback(ch, method, properties, body):
     block_hash = event.get("hash")
     timestamp = event.get("timestamp")
     
-    print(f"[{node_id}] Nuevo bloque recibido - Bloque {block_number} | Hash: {block_hash} | Timestamp: {timestamp}", flush=True)
+    logger.info(f"Nuevo bloque recibido - Bloque {block_number} | Hash: {block_hash} | Timestamp: {timestamp}")
     ch.basic_ack(delivery_tag=method.delivery_tag)
 
 def main():
@@ -46,7 +49,7 @@ def main():
     )
 
     node_id = socket.gethostname()
-    print(f"[{node_id}] Waiting for blocks. To exit press CTRL+C", flush=True)
+    logger.info(f"Waiting for blocks on node {node_id}. To exit press CTRL+C")
     channel.start_consuming()
 
 if __name__ == '__main__':

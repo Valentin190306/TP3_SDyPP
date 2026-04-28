@@ -4,6 +4,9 @@ import time
 import json
 import uuid
 from datetime import datetime, timezone
+import logger
+
+logger = logger.get_logger("publisher")
 
 def connect():
     host = os.getenv('RABBITMQ_HOST', 'rabbitmq')
@@ -14,7 +17,7 @@ def connect():
             return connection
         except pika.exceptions.AMQPConnectionError:
             delay = 2 ** i
-            print(f"[Publisher] Error connecting to RabbitMQ. Retrying in {delay} seconds...", flush=True)
+            logger.error(f"Error connecting to RabbitMQ. Retrying in {delay} seconds...")
             time.sleep(delay)
     raise Exception("[Publisher] Could not connect to RabbitMQ after max retries.")
 
@@ -38,7 +41,8 @@ def main():
             routing_key='',
             body=event_json
         )
-        print(f"[Publisher] Bloque {n} publicado: {event_json}", flush=True)
+
+        logger.info(f"Bloque {n} publicado: {event_json}")
         time.sleep(1)
 
     connection.close()
