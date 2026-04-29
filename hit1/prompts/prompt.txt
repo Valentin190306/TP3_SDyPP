@@ -1,0 +1,566 @@
+CONTEXTO DEL PROYECTO
+=====================
+Estoy desarrollando el HIT #1 de un Trabajo Práctico universitario sobre 
+Computación Distribuida. 
+
+El HIT #1 consiste en implementar el operador de Sobel en 3 etapas progresivas:
+centralizado, distribuido con Docker, y tolerante a fallos.
+
+ESTRUCTURA DEL REPOSITORIO ACTUAL
+==================================
+TP3_SDyPP/
+├── hit0/
+└── hit1/               ← trabajar aquí
+
+ESTRUCTURA FINAL REQUERIDA
+===========================
+TP3_SDyPP/hit1/
+├── etapa1-centralizado/
+│   ├── sobel.py
+│   ├── Dockerfile
+│   ├── requirements.txt
+│   └── images/
+│       └── input.jpg          ← imagen de prueba a incluir
+├── etapa2-distribuido/
+│   ├── master.py
+│   ├── worker.py
+│   ├── sobel_core.py
+│   ├── logger.py
+│   ├── Dockerfile.master
+│   ├── Dockerfile.worker
+│   ├── docker-compose.yml
+│   ├── requirements.txt
+│   └── images/                ← montado como volumen Docker
+├── etapa3-fault-tolerant/
+│   ├── master.py
+│   ├── worker.py
+│   ├── sobel_core.py
+│   ├── logger.py
+│   ├── Dockerfile.master
+│   ├── Dockerfile.worker
+│   ├── docker-compose.yml
+│   ├── requirements.txt
+│   └── images/
+└── README.md
+
+STACK TÉCNICO
+=============
+- Lenguaje: Python 3.11
+- Procesamiento de imagen: Pillow + numpy
+- Mensajería: pika (RabbitMQ)
+- Containerización: Docker + Docker Compose
+- Logging: módulo logging de Python estándar
+- Pruebas: pytest
+
+ESPECIFICACIONES TÉCNICAS DETALLADAS
+=====================================
+
+════════════════════════════════════════
+ETAPA 1 — CENTRALIZADO
+════════════════════════════════════════
+
+ARCHIVO: etapa1-centralizado/sobel.py
+--------------------------------------
+Script standalone que aplica el operador Sobel a una imagen completa.
+
+Imports requeridos:
+- argparse, time, os, logging
+- numpy as np
+- PIL.Image
+
+Argumentos CLI via argparse:
+- --input   ruta a la imagen de entrada (default: 'images/input.jpg')
+- --output  ruta a la imagen de salida  (default: 'images/output.jpg')
+
+Función implementar_sobel(img_array: np.ndarray) -> np.ndarray:
+- Recibe array numpy de la imagen en escala de grises, dtype float32
+- Definir kernel Gx:
+    [[-1, 0, 1],
+     [-2, 0, 2],
+     [-1, 0, 1]]
+- Definir kernel Gy:
+    [[-1, -2, -1],
+     [ 0,  0,  0],
+     [ 1,  2,  1]]
+- Aplicar convolución 2D manualmente con doble loop sobre píxeles
+  (no usar scipy ni cv2, implementar la convolución a mano para que
+  sea reutilizable como referencia en etapas siguientes)
+- Para cada píxel (i, j) considerando el vecindario 3x3:
+    Gx_val = suma de img[i+di][j+dj] * kernel_Gx[di+1][dj+1]
+    Gy_val = suma de img[i+di][j+dj] * kernel_Gy[di+1][dj+1]
+    magnitud = sqrt(Gx_val² + Gy_val²)
+- Ignorar el borde de 1 píxel (dejar en 0)
+- Clip al rango [0, 255] y retornar como uint8
+
+Función main():
+- Configurar logging básico a stdout con formato:
+  '%(asctime)s | sobel-central | %(levelname)s | %(message)s'
+- Registrar tiempo de inicio con time.time()
+- Abrir imagen con PIL.Image.open(), convertir a escala de grises ('L')
+- Convertir a numpy array float32
+- Loggear dimensiones: ancho, alto, tamaño en MB
+- Llamar implementar_sobel()
+- Registrar tiempo de fin, calcular duración
+- Loggear tiempo de procesamiento en segundos con 3 decimales
+- Guardar imagen resultado con PIL.Image.fromarray()
+- Loggear ruta del archivo de salida
+
+Bloque if __name__ == '__main__': llama a main()
+
+ARCHIVO: etapa1-centralizado/requirements.txt
+----------------------------------------------
+Pillow>=10.0
+numpy>=1.24
+
+ARCHIVO: etapa1-centralizado/Dockerfile
+-----------------------------------------
+FROM python:3.11-slim
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY sobel.py .
+ENTRYPOINT ["python", "sobel.py"]
+
+Ejecución desde terminal:
+  # Sin Docker:
+  pip install -r requirements.txt
+  python sobel.py --input images/input.jpg --output images/output.jpg
+
+  # Con Docker:
+  docker build -t sobel-central .
+  docker run -v $(pwd)/images:/app/images sobel-central \
+    --input /app/images/input.jpg --output /app/images/output.jpg
+
+
+════════════════════════════════════════
+ETAPA 2 — DISTRIBUIDO CON DOCKER
+════════════════════════════════════════
+
+ARCHIVO: etapa2-distribuido/sobel_core.py
+------------------------------------------
+Módulo compartido con la lógica Sobel pura. Exactamente la misma función
+implementar_sobel() de la etapa 1, más:
+
+Función apply_sobel_to_chunk(pixels_b64: str, width: int, height: int) -> str:
+- Decodificar pixels_b64 desde base64 a bytes
+- Reconstruir numpy array de shape (height, width) dtype uint8
+  con np.frombuffer()
+- Convertir a float32
+- Llamar implementar_sobel()
+- Codificar resultado a base64 y retornar como string
+
+Función encode_chunk(img_array: np.ndarray) -> str:
+- Recibe array 2D numpy uint8
+- Retorna base64 de los bytes raw (array.tobytes())
+
+Función decode_chunk(b64_str: str, width: int, height: int) -> np.ndarray:
+- Inversa de encode_chunk
+- Retorna array 2D uint8 de shape (height, width)
+
+ARCHIVO: etapa2-distribuido/logger.py
+---------------------------------------
+Idéntico al logger.py del HIT #0 patron1-MessageQueue.
+Función get_logger(name: str) -> logging.Logger con:
+- StreamHandler a stdout
+- FileHandler a /app/logs/{name}.log
+- os.makedirs('/app/logs', exist_ok=True)
+- Verificación "if not logger.handlers" para evitar duplicados
+- Formato: '%(asctime)s | %(name)s | %(levelname)s | %(message)s'
+- datefmt: '%Y-%m-%dT%H:%M:%S'
+
+ARCHIVO: etapa2-distribuido/master.py
+---------------------------------------
+Proceso principal que divide la imagen, publica chunks y reensambla.
+
+Constantes leídas desde variables de entorno:
+- RABBITMQ_HOST  (default: 'rabbitmq')
+- NUM_CHUNKS     (default: '4', convertir a int)
+- INPUT_IMAGE    (default: '/images/input.jpg')
+- OUTPUT_IMAGE   (default: '/images/output.jpg')
+
+Nombres de colas:
+- TASKS_QUEUE   = 'sobel_tasks'
+- RESULTS_QUEUE = 'sobel_results'
+
+Función connect_rabbitmq() -> pika.BlockingConnection:
+- Mismo retry con exponential backoff del HIT #0 (hasta 10 intentos, 2^i delay)
+- Loggear cada intento y éxito/fallo
+
+Función split_image(img_path: str, num_chunks: int) -> list[dict]:
+- Abrir imagen con PIL, convertir a escala de grises ('L')
+- Calcular altura de cada chunk: chunk_height = total_height // num_chunks
+  El último chunk absorbe los píxeles restantes
+- Para cada chunk i:
+  - Calcular row_start y row_end
+  - Agregar 1 fila de overlap arriba (si i > 0: row_start - 1)
+  - Agregar 1 fila de overlap abajo (si i < num_chunks-1: row_end + 1)
+  - Extraer subarray con el overlap incluido
+  - Construir dict:
+    {
+      "chunk_id": i,
+      "total_chunks": num_chunks,
+      "width": img_width,
+      "chunk_height": chunk_height_sin_overlap,
+      "overlap_top": 1 si i > 0 else 0,
+      "overlap_bottom": 1 si i < num_chunks-1 else 0,
+      "pixels": encode_chunk(subarray)   ← base64
+    }
+- Retornar lista de dicts
+
+Función publish_chunks(channel, chunks: list[dict]):
+- Declarar 'sobel_tasks' con durable=True
+- Declarar 'sobel_results' con durable=True
+- Purgar 'sobel_results' para evitar resultados de ejecuciones previas
+- Para cada chunk: basic_publish a 'sobel_tasks' con delivery_mode=2
+  y body = json.dumps(chunk)
+- Loggear cada publicación con chunk_id
+
+Función collect_results(channel, num_chunks: int) -> list[dict]:
+- Lista resultados = []
+- Consumir de 'sobel_results' en loop hasta len(resultados) == num_chunks
+- Usar channel.basic_get() en polling con time.sleep(0.1) entre intentos
+  (no usar start_consuming() para poder controlar el loop)
+- Por cada mensaje recibido: parsear JSON, agregar a lista, hacer ack
+- Loggear cada resultado recibido con chunk_id
+- Retornar lista ordenada por chunk_id
+
+Función assemble_image(results: list[dict], original_width: int,
+                        original_height: int, output_path: str):
+- Ordenar results por chunk_id
+- Crear array numpy vacío de shape (original_height, original_width) uint8
+- Para cada result: decodificar pixels, calcular row_start del chunk
+  en la imagen final, insertar slice
+- Guardar con PIL.Image.fromarray()
+- Loggear ruta de salida
+
+Función main():
+- Loggear inicio y parámetros de configuración
+- Registrar tiempo de inicio total
+- Conectar a RabbitMQ
+- Abrir imagen para obtener dimensiones originales antes de dividir
+- Llamar split_image()
+- Loggear dimensiones y número de chunks
+- Llamar publish_chunks()
+- Loggear que todos los chunks fueron publicados, esperando resultados
+- Llamar collect_results()
+- Llamar assemble_image()
+- Registrar tiempo total de procesamiento distribuido
+- Loggear métricas: tiempo total, num_chunks, tamaño imagen
+- Cerrar conexión
+
+ARCHIVO: etapa2-distribuido/worker.py
+---------------------------------------
+Proceso worker que consume chunks, aplica Sobel y publica resultados.
+
+Constantes desde env:
+- RABBITMQ_HOST (default: 'rabbitmq')
+- WORKER_ID     (default: socket.gethostname())
+
+Nombres de colas: mismos que master.py
+
+Función connect_rabbitmq(): idéntica a la del master
+
+Función process_chunk(ch, method, properties, body):
+- Es el callback de basic_consume
+- Parsear body como JSON
+- Extraer chunk_id, pixels, width, chunk_height, overlap_top, overlap_bottom
+- Loggear inicio de procesamiento con chunk_id y WORKER_ID
+- Registrar tiempo de inicio
+- Llamar sobel_core.apply_sobel_to_chunk() con los pixels del chunk completo
+  (con overlap incluido)
+- Recortar el overlap del resultado:
+  - Si overlap_top == 1: descartar primera fila del resultado
+  - Si overlap_bottom == 1: descartar última fila del resultado
+- El array resultante tiene exactamente chunk_height filas
+- Construir mensaje de resultado:
+  {
+    "chunk_id": chunk_id,
+    "pixels": encode_chunk(resultado_sin_overlap)
+  }
+- Publicar a 'sobel_results' con delivery_mode=2
+- Hacer basic_ack DESPUÉS de publicar el resultado (no antes)
+- Registrar tiempo de procesamiento del chunk
+- Loggear fin con chunk_id, tiempo y WORKER_ID
+
+Función main():
+- Loggear inicio del worker con WORKER_ID
+- Conectar a RabbitMQ
+- Declarar 'sobel_tasks' con durable=True
+- Declarar 'sobel_results' con durable=True
+- basic_qos(prefetch_count=1)
+- basic_consume(queue='sobel_tasks', on_message_callback=process_chunk)
+- Loggear "Worker listo, esperando chunks..."
+- start_consuming()
+
+ARCHIVO: etapa2-distribuido/docker-compose.yml
+------------------------------------------------
+Servicios:
+
+rabbitmq:
+  image: rabbitmq:management
+  ports: ["5672:5672", "15672:15672"]
+  healthcheck:
+    test: ["CMD", "rabbitmq-diagnostics", "ping"]
+    interval: 10s
+    timeout: 5s
+    retries: 10
+  volumes:
+    - rabbitmq_data:/var/lib/rabbitmq
+
+worker:
+  build:
+    context: .
+    dockerfile: Dockerfile.worker
+  depends_on:
+    rabbitmq:
+      condition: service_healthy
+  environment:
+    RABBITMQ_HOST: rabbitmq
+  volumes:
+    - ./logs:/app/logs
+  deploy:
+    replicas: 4
+
+master:
+  build:
+    context: .
+    dockerfile: Dockerfile.master
+  depends_on:
+    rabbitmq:
+      condition: service_healthy
+  environment:
+    RABBITMQ_HOST: rabbitmq
+    NUM_CHUNKS: "4"
+    INPUT_IMAGE: /images/input.jpg
+    OUTPUT_IMAGE: /images/output.jpg
+  volumes:
+    - ./images:/images
+    - ./logs:/app/logs
+  profiles: ["master"]
+
+volumes:
+  rabbitmq_data:
+
+ARCHIVO: etapa2-distribuido/Dockerfile.worker
+----------------------------------------------
+FROM python:3.11-slim
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY sobel_core.py logger.py worker.py .
+CMD ["python", "worker.py"]
+
+ARCHIVO: etapa2-distribuido/Dockerfile.master
+----------------------------------------------
+FROM python:3.11-slim
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY sobel_core.py logger.py master.py .
+CMD ["python", "master.py"]
+
+ARCHIVO: etapa2-distribuido/requirements.txt
+---------------------------------------------
+Pillow>=10.0
+numpy>=1.24
+pika>=1.3.0
+
+Comandos de ejecución para etapa 2:
+  # Levantar RabbitMQ y workers (4 réplicas)
+  docker compose up --scale worker=4 -d
+
+  # Colocar imagen de entrada en ./images/input.jpg
+  # Ejecutar master
+  docker compose --profile master run master
+
+  # Ver logs
+  docker compose logs worker
+  docker compose logs master
+
+  # Bajar todo
+  docker compose down
+
+
+════════════════════════════════════════
+ETAPA 3 — TOLERANTE A FALLOS
+════════════════════════════════════════
+
+La etapa 3 es una copia modificada de la etapa 2. Copiar todos los archivos
+de etapa2-distribuido/ a etapa3-fault-tolerant/ y aplicar las siguientes
+modificaciones:
+
+MODIFICACIÓN 1: worker.py — fallo simulado
+-------------------------------------------
+Agregar variable de entorno:
+- FAIL_PROBABILITY (default: '0.0', convertir a float)
+
+En process_chunk(), ANTES de llamar apply_sobel_to_chunk():
+  import random
+  if random.random() < float(os.getenv('FAIL_PROBABILITY', '0.0')):
+      logger.warning("Fallo simulado en chunk_id=%s, worker=%s", chunk_id, WORKER_ID)
+      # NO hacer ack → RabbitMQ reencola automáticamente cuando el worker muere
+      # Forzar caída del proceso para simular crash real
+      import sys
+      sys.exit(1)
+
+Este mecanismo aprovecha que el ack se hace DESPUÉS del procesamiento:
+si el worker muere antes del ack, RabbitMQ reencola el mensaje
+automáticamente al siguiente worker disponible.
+
+MODIFICACIÓN 2: master.py — timeout watcher
+--------------------------------------------
+Agregar constante desde env:
+- TASK_TIMEOUT_SECONDS (default: '30', convertir a int)
+
+En main(), ANTES de publish_chunks():
+- Crear dict: pending_tasks = {}  → {chunk_id: timestamp_envio}
+- Crear threading.Lock(): lock = threading.Lock()
+
+Modificar publish_chunks() para que también reciba pending_tasks y lock,
+y registre timestamp por chunk_id al publicar:
+  with lock:
+      pending_tasks[chunk_id] = time.time()
+
+Agregar función watcher_thread(channel, pending_tasks, lock, chunks_dict,
+                                timeout_seconds):
+- Correr en loop infinito con time.sleep(5) entre iteraciones
+- En cada iteración:
+  - Con lock adquirido, copiar pending_tasks para no bloquear
+  - Para cada chunk_id en la copia:
+    - Si time.time() - timestamp > timeout_seconds:
+      - Loggear WARNING: "Chunk chunk_id lleva Xs sin respuesta, reencolando"
+      - Republica el chunk original desde chunks_dict[chunk_id]
+      - Actualizar timestamp en pending_tasks[chunk_id]
+
+Modificar collect_results() para que también reciba pending_tasks y lock:
+- Al recibir resultado exitoso de chunk_id:
+  with lock:
+      pending_tasks.pop(chunk_id, None)
+
+Iniciar watcher_thread como daemon thread antes de collect_results():
+  import threading
+  t = threading.Thread(
+      target=watcher_thread,
+      args=(channel, pending_tasks, lock, chunks_by_id, TASK_TIMEOUT_SECONDS),
+      daemon=True
+  )
+  t.start()
+
+MODIFICACIÓN 3: docker-compose.yml — FAIL_PROBABILITY
+-------------------------------------------------------
+En el servicio worker, agregar env var:
+  FAIL_PROBABILITY: "0.3"    ← 30% de probabilidad de fallo
+
+Esto permite observar el comportamiento de reencola sin modificar código.
+
+Comandos de ejecución para etapa 3:
+  # Igual que etapa 2
+  docker compose up --scale worker=4 -d
+  docker compose --profile master run master
+
+  # Para observar reencola en acción, ver logs de workers:
+  docker compose logs -f worker
+
+
+════════════════════════════════════════
+ANÁLISIS DE PERFORMANCE — REQUERIMIENTO
+════════════════════════════════════════
+
+El master.py de etapa 2 y 3 debe loggear al finalizar una línea con formato
+JSON para facilitar la recolección de métricas:
+
+  logger.info("METRICS: %s", json.dumps({
+      "etapa": "distribuido",
+      "input_image": INPUT_IMAGE,
+      "image_size_mb": round(os.path.getsize(INPUT_IMAGE) / 1024 / 1024, 2),
+      "num_chunks": NUM_CHUNKS,
+      "num_workers": "ver docker compose scale",
+      "total_time_seconds": round(elapsed, 3)
+  }))
+
+El README debe incluir una tabla de resultados con estas combinaciones:
+- Imagen 1MB  × 1 worker × 2 chunks
+- Imagen 1MB  × 2 workers × 4 chunks
+- Imagen 1MB  × 4 workers × 4 chunks
+- Imagen 10MB × 4 workers × 4 chunks
+- Imagen 10MB × 8 workers × 8 chunks
+
+Para generar imágenes de prueba de distintos tamaños se puede usar:
+  python -c "
+  from PIL import Image
+  import numpy as np
+  arr = np.random.randint(0, 255, (2000, 2000, 3), dtype=np.uint8)
+  Image.fromarray(arr).save('images/input_10mb.jpg', quality=95)
+  "
+
+
+════════════════════════════════════════
+README.md (raíz de hit1/)
+════════════════════════════════════════
+
+Secciones requeridas:
+
+1. Título: "HIT #1 — Operador de Sobel"
+2. Descripción: qué es el operador Sobel y qué resuelve cada etapa
+3. Diagrama de arquitectura en ASCII para etapa 2 y 3:
+
+   Etapa 2:
+   [Master] → publica chunks → [RabbitMQ: sobel_tasks]
+                                      ↓ round-robin
+                          [Worker1] [Worker2] [WorkerN]
+                                      ↓
+                          [RabbitMQ: sobel_results]
+                                      ↓
+                               [Master: joiner]
+                                      ↓
+                             [imagen_output.jpg]
+
+   Etapa 3: igual + indicar el watcher thread y el mecanismo de reencola
+
+4. Instrucciones de ejecución para cada etapa con comandos exactos
+5. Tabla de métricas de performance (completar con valores reales)
+6. Decisiones de diseño:
+   - Por qué overlap de 1 fila entre chunks
+   - Por qué ack después del procesamiento y no al recibir
+   - Por qué basic_get() polling en lugar de start_consuming() en el master
+   - Por qué daemon thread para el watcher
+   - Diferencia de performance entre etapa 1 y etapa 2
+
+
+════════════════════════════════════════
+RESTRICCIONES GENERALES
+════════════════════════════════════════
+- No usar cv2 (OpenCV) ni scipy para la convolución Sobel. Implementar
+  manualmente con numpy para que el código sea autocontenido y sin
+  dependencias pesadas.
+- No usar variables de entorno hardcodeadas en el código. Siempre
+  os.getenv() con default.
+- El directorio ./logs/ debe estar en .gitignore.
+- El directorio ./images/ debe estar en .gitignore EXCEPTO por un
+  archivo images/.gitkeep para que el directorio sea commitable vacío.
+- No commitear imágenes de entrada ni salida al repositorio.
+- Todos los servicios deben funcionar ejecutando únicamente comandos
+  docker compose desde la carpeta de cada etapa.
+- El worker debe hacer ack SIEMPRE después de publicar el resultado,
+  nunca antes.
+- La función implementar_sobel() en sobel_core.py debe ser la misma
+  implementación que en etapa1-centralizado/sobel.py para garantizar
+  resultados idénticos entre etapa centralizada y distribuida.
+
+ORDEN DE IMPLEMENTACIÓN
+========================
+1. etapa1-centralizado/ completo (sobel.py, Dockerfile, requirements.txt)
+2. Verificar que etapa 1 produce resultado correcto con imagen de prueba
+3. etapa2-distribuido/sobel_core.py
+4. etapa2-distribuido/logger.py
+5. etapa2-distribuido/worker.py
+6. etapa2-distribuido/master.py
+7. etapa2-distribuido/Dockerfiles y docker-compose.yml
+8. Verificar que etapa 2 produce resultado idéntico a etapa 1
+9. Copiar etapa2 a etapa3 y aplicar modificaciones de fault tolerance
+10. Verificar que etapa 3 reencola correctamente con FAIL_PROBABILITY=0.3
+11. README.md con tabla de métricas completada
+
+Genera todos los archivos completos y funcionales. No uses placeholders
+ni comentarios TODO. Cada archivo debe estar listo para ejecutar sin
+modificaciones.

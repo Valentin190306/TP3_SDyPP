@@ -1,0 +1,942 @@
+CONTEXTO DEL PROYECTO
+=====================
+Estoy desarrollando el HIT #2 de un Trabajo Práctico universitario sobre
+Cloud Computing. Los HITs anteriores ya están implementados y funcionan:
+
+HIT #0: Patrón 1 Message Queue con RabbitMQ (producer.py, consumer.py,
+        logger.py, docker-compose.yml, pruebas pytest)
+
+HIT #1: Operador Sobel en 3 etapas:
+        - Etapa 1: centralizado (sobel.py standalone)
+        - Etapa 2: distribuido con Docker (master.py + worker.py + RabbitMQ)
+        - Etapa 3: tolerante a fallos (watcher thread + fallo simulado)
+        Archivos clave reutilizables: worker.py, sobel_core.py, logger.py,
+        master.py, requirements.txt
+
+El HIT #2 consiste en implementar el mismo Sobel distribuido del HIT #1
+pero con los workers corriendo en VMs efímeras en Google Cloud Platform
+aprovisionadas con Terraform (patrón Cloud-Bursting / arquitectura híbrida).
+RabbitMQ corre en una VM fija en GCP. El master corre localmente.
+
+ARQUITECTURA OBJETIVO
+=====================
+LOCAL (on-premise):
+  - master.py: divide imagen, publica chunks, reensambla resultado
+  - docker-compose local: solo para correr el master
+
+NUBE GCP:
+  - VM fija: RabbitMQ (creada con Terraform, no destruida entre runs)
+  - VM Worker 1..N: efímeras, creadas y destruidas por Terraform por run,
+    corren imagen Docker del worker
+
+FLUJO COMPLETO:
+  1. Terraform crea VM fija con RabbitMQ
+  2. Terraform crea N VMs worker (efímeras)
+  3. Cada VM worker hace bootstrap: instala Docker, pull imagen, corre worker
+  4. Master local se conecta a RabbitMQ en GCP, publica chunks
+  5. Workers consumen chunks, aplican Sobel, publican resultados
+  6. Master reensambla imagen final
+  7. Terraform destroy elimina VMs worker (VM RabbitMQ persiste)
+
+ESTRUCTURA FINAL REQUERIDA
+===========================
+TP3_SDyPP/hit2/
+├── terraform/
+│   ├── provider.tf
+│   ├── variables.tf
+│   ├── main.tf
+│   ├── outputs.tf
+│   └── terraform.tfvars.example
+├── worker/
+│   ├── worker.py
+│   ├── sobel_core.py
+│   ├── logger.py
+│   ├── requirements.txt
+│   └── Dockerfile
+├── master/
+│   ├── master.py
+│   ├── sobel_core.py
+│   ├── logger.py
+│   ├── requirements.txt
+│   ├── images/
+│   │   └── .gitkeep
+│   └── docker-compose.yml
+├── scripts/
+│   ├── worker_bootstrap.sh.tpl
+│   └── rabbitmq_bootstrap.sh
+├── .github/
+│   └── workflows/
+│       ├── terraform-plan.yml
+│       └── terraform-apply.yml
+├── .gitignore
+└── README.md
+
+STACK TÉCNICO
+=============
+- Lenguaje aplicación: Python 3.11
+- Procesamiento imagen: Pillow + numpy (mismas libs que HIT #1)
+- Mensajería: pika (RabbitMQ)
+- IaC: Terraform >= 1.6
+- Cloud provider: Google Cloud Platform (GCP)
+- Containerización workers: Docker
+- Registry: Docker Hub (público, no requiere autenticación para pull)
+- CI/CD: GitHub Actions
+- Autenticación GCP en CI/CD: Workload Identity Federation (OIDC)
+- Logging: módulo logging Python estándar (mismo logger.py del HIT #1)
+
+════════════════════════════════════════════════════════════
+PARTE 1 — CÓDIGO DE APLICACIÓN
+════════════════════════════════════════════════════════════
+
+ARCHIVO: worker/sobel_core.py
+------------------------------
+Copiar EXACTAMENTE el contenido de hit1/etapa2-distribuido/sobel_core.py.
+Sin modificaciones. Contiene:
+- implementar_sobel(img_array: np.ndarray) -> np.ndarray
+- apply_sobel_to_chunk(pixels_b64, width, height) -> str
+- encode_chunk(img_array) -> str
+- decode_chunk(b64_str, width, height) -> np.ndarray
+
+ARCHIVO: worker/logger.py
+--------------------------
+Copiar EXACTAMENTE el contenido de hit1/etapa2-distribuido/logger.py.
+Sin modificaciones. Contiene get_logger(name) con StreamHandler + FileHandler.
+
+ARCHIVO: worker/worker.py
+--------------------------
+Copiar hit1/etapa2-distribuido/worker.py con UNA sola modificación:
+
+La función connect_rabbitmq() debe leer el host desde env var RABBITMQ_HOST
+(ya lo hace) pero agregar también lectura de:
+- RABBITMQ_PORT   (default: '5672', convertir a int)
+- RABBITMQ_USER   (default: 'guest')
+- RABBITMQ_PASS   (default: 'guest')
+
+Usar pika.PlainCredentials y pika.ConnectionParameters completo:
+  credentials = pika.PlainCredentials(RABBITMQ_USER, RABBITMQ_PASS)
+  params = pika.ConnectionParameters(
+      host=RABBITMQ_HOST,
+      port=RABBITMQ_PORT,
+      credentials=credentials,
+      heartbeat=600,
+      blocked_connection_timeout=300
+  )
+
+El heartbeat=600 y blocked_connection_timeout=300 son necesarios para
+conexiones de larga distancia (local → GCP) que pueden tener latencia
+mayor y timeouts más agresivos.
+
+Todo lo demás del worker.py permanece idéntico al HIT #1.
+
+ARCHIVO: worker/requirements.txt
+----------------------------------
+Pillow>=10.0
+numpy>=1.24
+pika>=1.3.0
+
+ARCHIVO: worker/Dockerfile
+---------------------------
+FROM python:3.11-slim
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY sobel_core.py logger.py worker.py .
+RUN mkdir -p /app/logs
+CMD ["python", "worker.py"]
+
+ARCHIVO: master/sobel_core.py
+------------------------------
+Copia idéntica de worker/sobel_core.py.
+
+ARCHIVO: master/logger.py
+--------------------------
+Copia idéntica de worker/logger.py.
+Única diferencia: el FileHandler escribe en './logs/{name}.log' en lugar
+de '/app/logs/{name}.log' porque el master corre localmente, no en Docker.
+Usar os.path.join(os.getcwd(), 'logs', f'{name}.log') y
+os.makedirs(os.path.join(os.getcwd(), 'logs'), exist_ok=True).
+
+ARCHIVO: master/master.py
+--------------------------
+Basado en hit1/etapa2-distribuido/master.py con las siguientes
+modificaciones:
+
+1. Variables de entorno a leer (agregar a las existentes):
+   - RABBITMQ_PORT     (default: '5672', convertir a int)
+   - RABBITMQ_USER     (default: 'guest')
+   - RABBITMQ_PASS     (default: 'guest')
+   - NUM_WORKERS       (default: '2') ← solo para loggear en métricas
+
+2. Función connect_rabbitmq(): mismos cambios que en worker.py
+   (PlainCredentials, heartbeat=600, blocked_connection_timeout=300)
+
+3. Al final de main(), loggear métricas en JSON igual que HIT #1 pero
+   agregar campo "mode": "hibrido-gcp" y "num_workers": NUM_WORKERS
+
+4. Todo lo demás permanece idéntico al HIT #1 etapa 2.
+
+ARCHIVO: master/requirements.txt
+----------------------------------
+Pillow>=10.0
+numpy>=1.24
+pika>=1.3.0
+
+ARCHIVO: master/docker-compose.yml
+------------------------------------
+Solo define el servicio master para correrlo localmente.
+NO incluye RabbitMQ (RabbitMQ está en GCP).
+
+version: "3.8"
+services:
+  master:
+    build:
+      context: .
+      dockerfile: Dockerfile.master
+    environment:
+      RABBITMQ_HOST: ${RABBITMQ_HOST}
+      RABBITMQ_PORT: ${RABBITMQ_PORT:-5672}
+      RABBITMQ_USER: ${RABBITMQ_USER:-guest}
+      RABBITMQ_PASS: ${RABBITMQ_PASS:-guest}
+      NUM_CHUNKS: ${NUM_CHUNKS:-4}
+      NUM_WORKERS: ${NUM_WORKERS:-2}
+      INPUT_IMAGE: /images/input.jpg
+      OUTPUT_IMAGE: /images/output.jpg
+    volumes:
+      - ./images:/images
+      - ./logs:/app/logs
+
+Crear también master/Dockerfile.master:
+FROM python:3.11-slim
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY sobel_core.py logger.py master.py .
+RUN mkdir -p /app/logs
+CMD ["python", "master.py"]
+
+════════════════════════════════════════════════════════════
+PARTE 2 — SCRIPTS DE BOOTSTRAP
+════════════════════════════════════════════════════════════
+
+ARCHIVO: scripts/rabbitmq_bootstrap.sh
+----------------------------------------
+Script bash que se ejecuta UNA SOLA VEZ en la VM fija de RabbitMQ
+al ser creada por Terraform (via metadata_startup_script).
+
+Contenido:
+#!/bin/bash
+set -e
+exec > /var/log/bootstrap.log 2>&1
+
+echo "[$(date)] Iniciando bootstrap de RabbitMQ..."
+
+# Actualizar e instalar Docker
+apt-get update -y
+apt-get install -y docker.io curl
+systemctl start docker
+systemctl enable docker
+
+# Levantar RabbitMQ con management plugin
+docker run -d \
+  --name rabbitmq \
+  --restart unless-stopped \
+  -p 5672:5672 \
+  -p 15672:15672 \
+  -e RABBITMQ_DEFAULT_USER=${rabbitmq_user} \
+  -e RABBITMQ_DEFAULT_PASS=${rabbitmq_pass} \
+  rabbitmq:management
+
+echo "[$(date)] RabbitMQ iniciado correctamente"
+
+# Esperar a que RabbitMQ esté listo
+until docker exec rabbitmq rabbitmq-diagnostics ping 2>/dev/null; do
+  echo "[$(date)] Esperando RabbitMQ..."
+  sleep 5
+done
+
+echo "[$(date)] Bootstrap completo"
+
+ARCHIVO: scripts/worker_bootstrap.sh.tpl
+-----------------------------------------
+Template Terraform (no es bash puro, usa sintaxis templatefile()).
+Se interpola con variables Terraform antes de enviarse como user_data.
+
+Contenido:
+#!/bin/bash
+set -e
+exec > /var/log/bootstrap.log 2>&1
+
+echo "[$(date)] Iniciando bootstrap worker..."
+
+apt-get update -y
+apt-get install -y docker.io
+systemctl start docker
+systemctl enable docker
+
+echo "[$(date)] Descargando imagen worker..."
+docker pull ${worker_image}
+
+echo "[$(date)] Iniciando worker..."
+docker run -d \
+  --name sobel-worker \
+  --restart unless-stopped \
+  -e RABBITMQ_HOST=${rabbitmq_host} \
+  -e RABBITMQ_PORT=${rabbitmq_port} \
+  -e RABBITMQ_USER=${rabbitmq_user} \
+  -e RABBITMQ_PASS=${rabbitmq_pass} \
+  -e WORKER_ID=$(hostname) \
+  ${worker_image}
+
+echo "[$(date)] Worker iniciado correctamente"
+
+Nota: las variables ${...} en este archivo son interpolaciones de
+Terraform templatefile(), no variables de entorno bash. En bash real,
+para evitar conflicto con la interpolación de $(hostname), usar
+la sintaxis de Terraform: $${hostname} para que Terraform lo deje
+pasar sin interpolar (se convierte en $(hostname) en el script final).
+
+════════════════════════════════════════════════════════════
+PARTE 3 — INFRAESTRUCTURA TERRAFORM
+════════════════════════════════════════════════════════════
+
+ARCHIVO: terraform/provider.tf
+--------------------------------
+terraform {
+  required_version = ">= 1.6"
+  required_providers {
+    google = {
+      source  = "hashicorp/google"
+      version = "~> 5.0"
+    }
+  }
+  backend "gcs" {
+    bucket = var.tfstate_bucket   # NO usar var aquí, GCS backend no acepta vars
+    prefix = "hit2/state"
+  }
+}
+
+IMPORTANTE: el backend "gcs" NO acepta variables de Terraform en sus
+atributos. El bucket name debe ser un string literal o pasarse via
+-backend-config en CLI. Usar este enfoque:
+
+terraform {
+  backend "gcs" {
+    prefix = "hit2/state"
+    # bucket se pasa via: terraform init -backend-config="bucket=NOMBRE"
+  }
+}
+
+provider "google" {
+  project = var.project_id
+  region  = var.region
+}
+
+ARCHIVO: terraform/variables.tf
+---------------------------------
+Declarar TODAS estas variables con descripción y default donde corresponda:
+
+variable "project_id" {
+  description = "ID del proyecto GCP"
+  type        = string
+}
+
+variable "region" {
+  description = "Región GCP"
+  type        = string
+  default     = "us-central1"
+}
+
+variable "zone" {
+  description = "Zona GCP"
+  type        = string
+  default     = "us-central1-a"
+}
+
+variable "num_workers" {
+  description = "Número de VMs worker a crear"
+  type        = number
+  default     = 2
+}
+
+variable "worker_machine_type" {
+  description = "Tipo de máquina para workers"
+  type        = string
+  default     = "e2-medium"
+}
+
+variable "rabbitmq_machine_type" {
+  description = "Tipo de máquina para RabbitMQ"
+  type        = string
+  default     = "e2-small"
+}
+
+variable "worker_image" {
+  description = "Imagen Docker del worker en Docker Hub"
+  type        = string
+  default     = "DOCKERHUB_USER/sobel-worker:latest"
+}
+
+variable "rabbitmq_user" {
+  description = "Usuario RabbitMQ"
+  type        = string
+  default     = "admin"
+}
+
+variable "rabbitmq_pass" {
+  description = "Password RabbitMQ"
+  type        = string
+  sensitive   = true
+}
+
+variable "os_image" {
+  description = "Imagen del SO para las VMs"
+  type        = string
+  default     = "debian-cloud/debian-12"
+}
+
+variable "tfstate_bucket" {
+  description = "Nombre del bucket GCS para el estado remoto de Terraform"
+  type        = string
+}
+
+ARCHIVO: terraform/main.tf
+----------------------------
+Definir los siguientes recursos en este orden:
+
+--- 1. VPC y subred ---
+
+resource "google_compute_network" "hit2_vpc" {
+  name                    = "hit2-vpc"
+  auto_create_subnetworks = false
+}
+
+resource "google_compute_subnetwork" "hit2_subnet" {
+  name          = "hit2-subnet"
+  ip_cidr_range = "10.0.0.0/24"
+  region        = var.region
+  network       = google_compute_network.hit2_vpc.id
+}
+
+--- 2. Firewall rules ---
+
+Regla 1: permitir SSH (puerto 22) desde cualquier IP para administración:
+resource "google_compute_firewall" "allow_ssh" {
+  name    = "hit2-allow-ssh"
+  network = google_compute_network.hit2_vpc.name
+  allow {
+    protocol = "tcp"
+    ports    = ["22"]
+  }
+  source_ranges = ["0.0.0.0/0"]
+  target_tags   = ["hit2-vm"]
+}
+
+Regla 2: permitir RabbitMQ (5672 y 15672) desde cualquier IP:
+resource "google_compute_firewall" "allow_rabbitmq" {
+  name    = "hit2-allow-rabbitmq"
+  network = google_compute_network.hit2_vpc.name
+  allow {
+    protocol = "tcp"
+    ports    = ["5672", "15672"]
+  }
+  source_ranges = ["0.0.0.0/0"]
+  target_tags   = ["hit2-rabbitmq"]
+}
+
+Regla 3: permitir todo el tráfico interno entre VMs de la VPC:
+resource "google_compute_firewall" "allow_internal" {
+  name    = "hit2-allow-internal"
+  network = google_compute_network.hit2_vpc.name
+  allow {
+    protocol = "tcp"
+  }
+  allow {
+    protocol = "icmp"
+  }
+  source_ranges = ["10.0.0.0/24"]
+}
+
+--- 3. VM RabbitMQ (fija, no se destruye entre runs) ---
+
+resource "google_compute_instance" "rabbitmq_vm" {
+  name         = "hit2-rabbitmq"
+  machine_type = var.rabbitmq_machine_type
+  zone         = var.zone
+  tags         = ["hit2-vm", "hit2-rabbitmq"]
+
+  boot_disk {
+    initialize_params {
+      image = var.os_image
+      size  = 20
+    }
+  }
+
+  network_interface {
+    subnetwork = google_compute_subnetwork.hit2_subnet.id
+    access_config {}   # IP pública efímera
+  }
+
+  metadata_startup_script = templatefile(
+    "${path.module}/../scripts/rabbitmq_bootstrap.sh",
+    {
+      rabbitmq_user = var.rabbitmq_user
+      rabbitmq_pass = var.rabbitmq_pass
+    }
+  )
+
+  metadata = {
+    enable-oslogin = "TRUE"
+  }
+}
+
+--- 4. VMs Worker (efímeras, count = num_workers) ---
+
+resource "google_compute_instance" "worker_vms" {
+  count        = var.num_workers
+  name         = "hit2-worker-${count.index + 1}"
+  machine_type = var.worker_machine_type
+  zone         = var.zone
+  tags         = ["hit2-vm"]
+
+  boot_disk {
+    initialize_params {
+      image = var.os_image
+      size  = 20
+    }
+  }
+
+  network_interface {
+    subnetwork = google_compute_subnetwork.hit2_subnet.id
+    access_config {}
+  }
+
+  metadata_startup_script = templatefile(
+    "${path.module}/../scripts/worker_bootstrap.sh.tpl",
+    {
+      worker_image   = var.worker_image
+      rabbitmq_host  = google_compute_instance.rabbitmq_vm.network_interface[0].network_ip
+      rabbitmq_port  = "5672"
+      rabbitmq_user  = var.rabbitmq_user
+      rabbitmq_pass  = var.rabbitmq_pass
+    }
+  )
+
+  metadata = {
+    enable-oslogin = "TRUE"
+  }
+
+  depends_on = [google_compute_instance.rabbitmq_vm]
+}
+
+ARCHIVO: terraform/outputs.tf
+------------------------------
+output "rabbitmq_public_ip" {
+  description = "IP pública de la VM RabbitMQ"
+  value       = google_compute_instance.rabbitmq_vm.network_interface[0].access_config[0].nat_ip
+}
+
+output "rabbitmq_internal_ip" {
+  description = "IP interna de la VM RabbitMQ"
+  value       = google_compute_instance.rabbitmq_vm.network_interface[0].network_ip
+}
+
+output "worker_public_ips" {
+  description = "IPs públicas de los workers"
+  value       = [for vm in google_compute_instance.worker_vms : vm.network_interface[0].access_config[0].nat_ip]
+}
+
+output "rabbitmq_amqp_url" {
+  description = "URL AMQP para conectar el master local a RabbitMQ"
+  value       = "amqp://${var.rabbitmq_user}:***@${google_compute_instance.rabbitmq_vm.network_interface[0].access_config[0].nat_ip}:5672"
+  sensitive   = false
+}
+
+ARCHIVO: terraform/terraform.tfvars.example
+--------------------------------------------
+Archivo de ejemplo SIN valores reales. El .tfvars real va en .gitignore.
+
+project_id            = "mi-proyecto-gcp-123"
+region                = "us-central1"
+zone                  = "us-central1-a"
+num_workers           = 2
+worker_machine_type   = "e2-medium"
+rabbitmq_machine_type = "e2-small"
+worker_image          = "miusuario/sobel-worker:latest"
+rabbitmq_user         = "admin"
+rabbitmq_pass         = "CAMBIAR_POR_PASSWORD_SEGURO"
+tfstate_bucket        = "mi-bucket-tfstate-hit2"
+
+════════════════════════════════════════════════════════════
+PARTE 4 — CI/CD GITHUB ACTIONS
+════════════════════════════════════════════════════════════
+
+CONSIDERACIÓN CRÍTICA DE SEGURIDAD:
+Las credenciales GCP se gestionan via Workload Identity Federation (OIDC).
+No se usan service account keys descargadas. No se commitea ningún archivo
+de credenciales. Todo se configura en GitHub Secrets del repositorio.
+
+GitHub Secrets requeridos (configurar manualmente en el repo, NO en código):
+- GCP_PROJECT_ID
+- GCP_WORKLOAD_IDENTITY_PROVIDER   (formato: projects/NUM/locations/global/...)
+- GCP_SERVICE_ACCOUNT              (formato: sa-name@project.iam.gserviceaccount.com)
+- TF_STATE_BUCKET
+- RABBITMQ_PASS
+- DOCKER_USERNAME
+- DOCKER_PASSWORD
+
+ARCHIVO: .github/workflows/terraform-plan.yml
+----------------------------------------------
+name: Terraform Plan
+
+on:
+  pull_request:
+    paths:
+      - 'hit2/terraform/**'
+      - 'hit2/scripts/**'
+      - 'hit2/worker/**'
+
+permissions:
+  contents: read
+  id-token: write
+  pull-requests: write
+
+jobs:
+  plan:
+    name: Terraform Plan
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: hit2/terraform
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Authenticate to GCP via Workload Identity
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.6.0"
+
+      - name: Terraform Init
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}"
+
+      - name: Terraform Validate
+        run: terraform validate
+
+      - name: Terraform Plan
+        id: plan
+        run: |
+          terraform plan \
+            -var="project_id=${{ secrets.GCP_PROJECT_ID }}" \
+            -var="rabbitmq_pass=${{ secrets.RABBITMQ_PASS }}" \
+            -var="tfstate_bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -no-color \
+            -out=tfplan
+        continue-on-error: true
+
+      - name: Comment PR with Plan
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const output = `#### Terraform Plan 📋
+            \`\`\`
+            ${{ steps.plan.outputs.stdout }}
+            \`\`\`
+            *Triggered by: @${{ github.actor }}*`;
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: output
+            })
+
+      - name: Check Plan Status
+        if: steps.plan.outcome == 'failure'
+        run: exit 1
+
+ARCHIVO: .github/workflows/terraform-apply.yml
+-----------------------------------------------
+name: Terraform Apply
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'hit2/terraform/**'
+      - 'hit2/scripts/**'
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  apply:
+    name: Terraform Apply
+    runs-on: ubuntu-latest
+    environment: production
+    defaults:
+      run:
+        working-directory: hit2/terraform
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Authenticate to GCP via Workload Identity
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.6.0"
+
+      - name: Terraform Init
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}"
+
+      - name: Terraform Apply
+        run: |
+          terraform apply \
+            -var="project_id=${{ secrets.GCP_PROJECT_ID }}" \
+            -var="rabbitmq_pass=${{ secrets.RABBITMQ_PASS }}" \
+            -var="tfstate_bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -auto-approve
+
+ARCHIVO: .github/workflows/docker-build-push.yml
+-------------------------------------------------
+name: Build and Push Worker Image
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'hit2/worker/**'
+
+jobs:
+  build-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Build and Push
+        uses: docker/build-push-action@v5
+        with:
+          context: hit2/worker
+          push: true
+          tags: |
+            ${{ secrets.DOCKER_USERNAME }}/sobel-worker:latest
+            ${{ secrets.DOCKER_USERNAME }}/sobel-worker:${{ github.sha }}
+
+════════════════════════════════════════════════════════════
+PARTE 5 — ARCHIVOS DE CONFIGURACIÓN Y SEGURIDAD
+════════════════════════════════════════════════════════════
+
+ARCHIVO: .gitignore (agregar a .gitignore existente en raíz del repo)
+----------------------------------------------------------------------
+# Terraform
+hit2/terraform/.terraform/
+hit2/terraform/*.tfstate
+hit2/terraform/*.tfstate.backup
+hit2/terraform/*.tfvars
+hit2/terraform/.terraform.lock.hcl
+hit2/terraform/tfplan
+
+# Imágenes
+hit2/master/images/*
+!hit2/master/images/.gitkeep
+
+# Logs
+hit2/master/logs/
+hit2/**/*.log
+
+# Variables de entorno
+hit2/**/.env
+
+ARCHIVO: hit2/master/images/.gitkeep
+--------------------------------------
+Archivo vacío. Solo crearlo para que el directorio sea commitable.
+
+════════════════════════════════════════════════════════════
+PARTE 6 — README.md
+════════════════════════════════════════════════════════════
+
+ARCHIVO: hit2/README.md
+------------------------
+Secciones requeridas:
+
+1. Título: "HIT #2 — Sobel con Offloading en la Nube (Cloud-Bursting)"
+
+2. Descripción de la arquitectura híbrida con diagrama ASCII:
+
+   LOCAL
+   ┌─────────────────────┐
+   │  master.py          │──── publica chunks ────┐
+   │  (divide imagen)    │                        │
+   │  (reensambla)       │◄─── recibe resultados ─┤
+   └─────────────────────┘                        │
+                                                  ▼
+   GOOGLE CLOUD PLATFORM                  ┌──────────────┐
+   ┌────────────────────────────────┐     │   RabbitMQ   │
+   │  VM fija: RabbitMQ             │     │  (VM fija)   │
+   │  ┌──────────────────────────┐  │     └──────┬───────┘
+   │  │ sobel_tasks queue        │  │            │
+   │  │ sobel_results queue      │  │     ┌──────┴───────┐
+   │  └──────────────────────────┘  │     │  round-robin │
+   │                                │     └──────┬───────┘
+   │  VMs efímeras (Terraform)      │            │
+   │  ┌──────────┐ ┌──────────┐     │    ┌───────┴──────────────┐
+   │  │ Worker 1 │ │ Worker N │     │    │ Worker 1 ... Worker N│
+   │  │ (Docker) │ │ (Docker) │     │    │ (VMs GCP efímeras)   │
+   │  └──────────┘ └──────────┘     │    └──────────────────────┘
+   └────────────────────────────────┘
+            ▲
+       Terraform crea/destruye
+
+3. Pre-requisitos:
+   - Cuenta GCP con billing habilitado
+   - gcloud CLI instalado y autenticado
+   - Terraform >= 1.6 instalado
+   - Docker instalado
+   - Cuenta Docker Hub
+   - Bucket GCS creado manualmente para el estado remoto
+
+4. Instrucciones de ejecución paso a paso:
+
+   Paso 1 — Crear bucket GCS para estado remoto (solo la primera vez):
+     gcloud storage buckets create gs://NOMBRE-BUCKET \
+       --project=PROJECT_ID \
+       --location=us-central1 \
+       --uniform-bucket-level-access
+
+   Paso 2 — Construir y publicar imagen Docker del worker:
+     cd hit2/worker
+     docker build -t DOCKERHUB_USER/sobel-worker:latest .
+     docker push DOCKERHUB_USER/sobel-worker:latest
+
+   Paso 3 — Configurar variables Terraform:
+     cd hit2/terraform
+     cp terraform.tfvars.example terraform.tfvars
+     # Editar terraform.tfvars con valores reales
+
+   Paso 4 — Inicializar y aplicar Terraform:
+     terraform init -backend-config="bucket=NOMBRE-BUCKET"
+     terraform plan
+     terraform apply
+
+   Paso 5 — Obtener IP de RabbitMQ:
+     terraform output rabbitmq_public_ip
+
+   Paso 6 — Esperar bootstrap de RabbitMQ (~2 minutos) y correr master:
+     cd hit2/master
+     # Copiar imagen de entrada
+     cp /ruta/a/imagen.jpg images/input.jpg
+     # Configurar variables
+     export RABBITMQ_HOST=$(cd ../terraform && terraform output -raw rabbitmq_public_ip)
+     export RABBITMQ_USER=admin
+     export RABBITMQ_PASS=TU_PASSWORD
+     export NUM_CHUNKS=4
+     docker compose run master
+
+   Paso 7 — Ver imagen resultado:
+     # La imagen procesada queda en hit2/master/images/output.jpg
+
+   Paso 8 — Destruir workers (conservar RabbitMQ):
+     cd hit2/terraform
+     terraform destroy -target=google_compute_instance.worker_vms
+
+   Paso 9 — Destruir todo (incluyendo RabbitMQ):
+     terraform destroy
+
+5. Tabla de análisis de performance híbrido (completar con valores reales):
+
+   | Imagen | Workers locales (HIT #1) | Workers GCP | Tiempo total |
+   |--------|--------------------------|-------------|--------------|
+   | 1 MB   | 2                        | 0           | ?s           |
+   | 1 MB   | 0                        | 2           | ?s           |
+   | 1 MB   | 0                        | 4           | ?s           |
+   | 10 MB  | 0                        | 2           | ?s           |
+   | 10 MB  | 0                        | 4           | ?s           |
+
+6. Decisiones de diseño:
+   - Por qué RabbitMQ en VM fija y no efímera
+   - Por qué workers en VMs y no en Kubernetes (eso es HIT #3)
+   - Por qué heartbeat=600 en las conexiones pika
+   - Por qué templatefile() en lugar de hardcodear el bootstrap script
+   - Por qué backend remoto obligatorio (colaboración, CI/CD, no perder estado)
+   - Tradeoffs de latencia local vs nube para este problema específico
+
+7. Configuración de Workload Identity Federation (referencia):
+   Documentar los comandos gcloud para configurar WIF, necesarios antes
+   de que funcionen los pipelines de CI/CD. Incluir los comandos exactos
+   para crear el pool, el provider, y los bindings de IAM.
+
+════════════════════════════════════════════════════════════
+RESTRICCIONES CRÍTICAS
+════════════════════════════════════════════════════════════
+- NUNCA commitear terraform.tfvars al repositorio
+- NUNCA commitear service account keys (.json) al repositorio
+- NUNCA hardcodear passwords, IPs o credenciales en ningún archivo
+  de código fuente o Terraform
+- El archivo .gitignore debe estar configurado ANTES del primer commit
+- El backend "gcs" de Terraform NO acepta variables en sus atributos:
+  el bucket name se pasa via -backend-config en CLI o en el pipeline
+- El script worker_bootstrap.sh.tpl usa sintaxis de Terraform templatefile():
+  las variables se referencian como ${variable_name} (sin signo $$ previo)
+  EXCEPTO comandos bash que usan $() como $$(hostname) que deben escribirse
+  como $${hostname} para que Terraform los deje pasar sin interpolar
+- La imagen Docker del worker DEBE estar en un registry público (Docker Hub)
+  para que las VMs GCP puedan hacer pull sin autenticación
+- heartbeat=600 en pika.ConnectionParameters es obligatorio para conexiones
+  master-local a RabbitMQ-GCP, sin esto la conexión se cierra por timeout
+  durante procesamiento de imágenes grandes
+
+ORDEN DE IMPLEMENTACIÓN
+========================
+Implementar en este orden para poder testear incrementalmente:
+
+1. worker/sobel_core.py, worker/logger.py (copiar de HIT #1)
+2. worker/worker.py (copiar + modificar credenciales pika)
+3. worker/Dockerfile + worker/requirements.txt
+4. Verificar build local: docker build -t test-worker ./worker
+5. master/sobel_core.py, master/logger.py (copiar + ajustar path logs)
+6. master/master.py (copiar + modificar credenciales pika)
+7. master/Dockerfile.master + master/requirements.txt + master/docker-compose.yml
+8. scripts/rabbitmq_bootstrap.sh
+9. scripts/worker_bootstrap.sh.tpl
+10. terraform/variables.tf
+11. terraform/provider.tf
+12. terraform/main.tf
+13. terraform/outputs.tf
+14. terraform/terraform.tfvars.example
+15. .gitignore (verificar que cubre todos los archivos sensibles)
+16. .github/workflows/docker-build-push.yml
+17. .github/workflows/terraform-plan.yml
+18. .github/workflows/terraform-apply.yml
+19. hit2/master/images/.gitkeep
+20. hit2/README.md
+
+Genera todos los archivos completos y funcionales. No uses placeholders
+ni comentarios TODO. Cada archivo debe estar listo para usar sin
+modificaciones, salvo la sustitución de DOCKERHUB_USER y PROJECT_ID
+por los valores reales del usuario.

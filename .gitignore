@@ -211,7 +211,7 @@ logs/
 *.log
 
 # Prompts de IA
-prompts/
+#prompts/
 
 # Pytest
 .pytest_cache/
