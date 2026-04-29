@@ -23,6 +23,7 @@ services:
         condition: service_healthy
     environment:
       RABBITMQ_HOST: rabbitmq
+      FAIL_PROBABILITY: "0.3"
     volumes:
       - ./logs:/app/logs
     deploy:
@@ -40,6 +41,7 @@ services:
       NUM_CHUNKS: "4"
       INPUT_IMAGE: /app/images/input.jpg
       OUTPUT_IMAGE: /app/images/output.jpg
+      TASK_TIMEOUT_SECONDS: "30"
     volumes:
       - ./images:/app/images
       - ./logs:/app/logs

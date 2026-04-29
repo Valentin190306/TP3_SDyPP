@@ -2,12 +2,15 @@ import os
 import time
 import json
 import socket
+import sys
+import random
 import pika
 from logger import get_logger
 from sobel_core import apply_sobel_to_chunk, encode_chunk, decode_chunk
 
 RABBITMQ_HOST = os.environ.get('RABBITMQ_HOST', 'rabbitmq')
 WORKER_ID = os.environ.get('WORKER_ID', socket.gethostname())
+FAIL_PROBABILITY = float(os.environ.get('FAIL_PROBABILITY', '0.0'))
 
 TASKS_QUEUE = 'sobel_tasks'
 RESULTS_QUEUE = 'sobel_results'
@@ -15,7 +18,6 @@ RESULTS_QUEUE = 'sobel_results'
 logger = get_logger(f'worker_{WORKER_ID}')
 
 def connect_rabbitmq() -> pika.BlockingConnection:
-    # Mismo retry con exponential backoff
     max_retries = 10
     for i in range(max_retries):
         try:
@@ -47,13 +49,13 @@ def process_chunk(ch, method, properties, body):
     
     logger.info(f"[{WORKER_ID}] Iniciando procesamiento de chunk {chunk_id}")
     
-    # Calcular altura total con overlap
+    # Fallo simulado
+    if random.random() < FAIL_PROBABILITY:
+        logger.warning("Fallo simulado en chunk_id=%s, worker=%s", chunk_id, WORKER_ID)
+        sys.exit(1)
+        
     total_height = chunk_height + overlap_top + overlap_bottom
-    
-    # Aplicar Sobel (apply_sobel_to_chunk toma la imagen completa incluyendo el overlap)
     result_b64 = apply_sobel_to_chunk(pixels_b64, width, total_height)
-    
-    # Recortar el overlap del resultado
     result_array = decode_chunk(result_b64, width, total_height)
     
     row_start = 1 if overlap_top == 1 else 0
@@ -62,7 +64,6 @@ def process_chunk(ch, method, properties, body):
     final_array = result_array[row_start:row_end, :]
     final_b64 = encode_chunk(final_array)
     
-    # Preparar resultado
     result_data = {
         "chunk_id": chunk_id,
         "chunk_height": chunk_height,
@@ -70,7 +71,6 @@ def process_chunk(ch, method, properties, body):
         "pixels": final_b64
     }
     
-    # Publicar en resultados
     ch.basic_publish(
         exchange='',
         routing_key=RESULTS_QUEUE,
@@ -80,7 +80,7 @@ def process_chunk(ch, method, properties, body):
         )
     )
     
-    # Confirmar mensaje procesado
+    # Hacer basic_ack DESPUÉS de publicar
     ch.basic_ack(delivery_tag=method.delivery_tag)
     
     end_time = time.time()

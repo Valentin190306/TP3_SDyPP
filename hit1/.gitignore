@@ -1,0 +1,7 @@
+logs/
+**/images/*
+!**/images/.gitkeep
+*.jpg
+*.png
+__pycache__/
+*.pyc
