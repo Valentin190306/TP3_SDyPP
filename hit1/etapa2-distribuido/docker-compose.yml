@@ -1,0 +1,43 @@
+version: '3.8'
+
+services:
+  rabbitmq:
+    image: rabbitmq:3-management
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  master:
+    build:
+      context: .
+      dockerfile: Dockerfile.master
+    environment:
+      - RABBITMQ_HOST=rabbitmq
+      - NUM_CHUNKS=4
+      - INPUT_IMAGE=/app/images/input.jpg
+      - OUTPUT_IMAGE=/app/images/output.jpg
+    volumes:
+      - ./images:/app/images
+      - ./logs:/app/logs
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    environment:
+      - RABBITMQ_HOST=rabbitmq
+    volumes:
+      - ./logs:/app/logs
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    deploy:
+      replicas: 2
