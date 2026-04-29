@@ -215,3 +215,22 @@ logs/
 
 # Pytest
 .pytest_cache/
+
+# Terraform
+hit2/terraform/.terraform/
+hit2/terraform/*.tfstate
+hit2/terraform/*.tfstate.backup
+hit2/terraform/*.tfvars
+hit2/terraform/.terraform.lock.hcl
+hit2/terraform/tfplan
+
+# Imágenes HIT2
+hit2/master/images/*
+!hit2/master/images/.gitkeep
+
+# Logs HIT2
+hit2/master/logs/
+hit2/**/*.log
+
+# Variables de entorno HIT2
+hit2/**/.env

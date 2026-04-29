@@ -1,0 +1,17 @@
+services:
+  master:
+    build:
+      context: .
+      dockerfile: Dockerfile.master
+    environment:
+      RABBITMQ_HOST: ${RABBITMQ_HOST}
+      RABBITMQ_PORT: ${RABBITMQ_PORT:-5672}
+      RABBITMQ_USER: ${RABBITMQ_USER:-guest}
+      RABBITMQ_PASS: ${RABBITMQ_PASS:-guest}
+      NUM_CHUNKS: ${NUM_CHUNKS:-4}
+      NUM_WORKERS: ${NUM_WORKERS:-2}
+      INPUT_IMAGE: /images/input.jpg
+      OUTPUT_IMAGE: /images/output.jpg
+    volumes:
+      - ./images:/images
+      - ./logs:/app/logs

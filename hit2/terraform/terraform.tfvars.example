@@ -1,0 +1,10 @@
+project_id            = "mi-proyecto-gcp-123"
+region                = "us-central1"
+zone                  = "us-central1-a"
+num_workers           = 2
+worker_machine_type   = "e2-medium"
+rabbitmq_machine_type = "e2-small"
+worker_image          = "miusuario/sobel-worker:latest"
+rabbitmq_user         = "admin"
+rabbitmq_pass         = "CAMBIAR_POR_PASSWORD_SEGURO"
+tfstate_bucket        = "mi-bucket-tfstate-hit2"
