@@ -38,8 +38,8 @@ services:
     environment:
       RABBITMQ_HOST: rabbitmq
       NUM_CHUNKS: "4"
-      INPUT_IMAGE: /app/images/input.jpg
-      OUTPUT_IMAGE: /app/images/output.jpg
+      INPUT_IMAGE: /app/images/maravilla.jpeg
+      OUTPUT_IMAGE: /app/images/resultado.jpg
     volumes:
       - ./images:/app/images
       - ./logs:/app/logs
