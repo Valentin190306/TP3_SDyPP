@@ -1,0 +1,31 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: sobel-master
+spec:
+  template:
+    spec:
+      containers:
+      - name: master
+        image: sobel-master:latest
+        imagePullPolicy: Never
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+        envFrom:
+        - configMapRef:
+            name: sobel-config
+        volumeMounts:
+        - name: images-storage
+          mountPath: /app/images
+        - name: logs-storage
+          mountPath: /app/logs
+      restartPolicy: OnFailure
+      volumes:
+      - name: images-storage
+        persistentVolumeClaim:
+          claimName: sobel-images-pvc
+      - name: logs-storage
+        persistentVolumeClaim:
+          claimName: sobel-logs-pvc
+  backoffLimit: 4

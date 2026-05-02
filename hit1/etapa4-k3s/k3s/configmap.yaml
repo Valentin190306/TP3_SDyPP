@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sobel-config
+data:
+  RABBITMQ_HOST: "rabbitmq"
+  NUM_CHUNKS: "4"
+  TASK_TIMEOUT_SECONDS: "30"
+  FAIL_PROBABILITY: "0.0"
+  INPUT_IMAGE: "/app/images/logo-unlu.png"
+  OUTPUT_IMAGE: "/app/images/resultado.jpg"

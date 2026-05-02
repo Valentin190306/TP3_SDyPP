@@ -6,6 +6,22 @@ __pycache__/
 # C extensions
 *.so
 
+# Compressed files
+*.zip
+*.rar
+*.tar.gz
+*.tar
+*.tgz
+*.7z
+*.tar.bz2
+*.tar.xz
+*.tar.lzma
+*.tbz2
+*.tlz
+*.txz
+*.tar.zst
+*.zst
+
 # Distribution / packaging
 .Python
 build/

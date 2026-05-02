@@ -1,0 +1,36 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sobel-worker
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: sobel-worker
+  template:
+    metadata:
+      labels:
+        app: sobel-worker
+    spec:
+      containers:
+      - name: worker
+        image: sobel-worker:latest
+        imagePullPolicy: Never
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+        envFrom:
+        - configMapRef:
+            name: sobel-config
+        volumeMounts:
+        - name: images-storage
+          mountPath: /app/images
+        - name: logs-storage
+          mountPath: /app/logs
+      volumes:
+      - name: images-storage
+        persistentVolumeClaim:
+          claimName: sobel-images-pvc
+      - name: logs-storage
+        persistentVolumeClaim:
+          claimName: sobel-logs-pvc
