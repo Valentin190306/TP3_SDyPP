@@ -63,14 +63,14 @@ def callback(ch, method, properties, body):
     success = random.choice([True, False])
 
     if success:
-        logger.info(f"✅ Procesamiento exitoso para {msg_id}")
+        logger.info(f"Procesamiento exitoso para {msg_id}")
         ch.basic_ack(delivery_tag=method.delivery_tag)
     else:
         if retry_count < MAX_RETRIES:
             delay_s = RETRY_DELAYS[retry_count]
             next_retry = retry_count + 1
             
-            logger.warning(f"❌ Fallo al procesar {msg_id}. Reintentando (Intento {next_retry}/{MAX_RETRIES}). Esperando {delay_s}s...")
+            logger.warning(f"Fallo al procesar {msg_id}. Reintentando (Intento {next_retry}/{MAX_RETRIES}). Esperando {delay_s}s...")
             
             # Actualizar cabeceras
             headers["x-retry-count"] = next_retry
@@ -91,7 +91,7 @@ def callback(ch, method, properties, body):
             # Ack al original
             ch.basic_ack(delivery_tag=method.delivery_tag)
         else:
-            logger.error(f"💀 Límite de reintentos alcanzado para {msg_id}. Enviando a DLQ.")
+            logger.error(f"Límite de reintentos alcanzado para {msg_id}. Enviando a DLQ.")
             
             ch.basic_publish(
                 exchange=DLQ_EXCHANGE,
