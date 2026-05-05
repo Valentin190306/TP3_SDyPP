@@ -50,7 +50,7 @@ def test_assemble_image(tmp_path):
     """
     Prueba el reensamblado de los chunks procesados.
     """
-    output_path = tmp_path / "output.jpg"
+    output_path = tmp_path / "output.png"
     
     results = []
     # Simular chunks procesados

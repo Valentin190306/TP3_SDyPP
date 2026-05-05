@@ -73,7 +73,7 @@ def test_assemble_image_results(tmp_path):
     """
     Prueba el ensamblado final de los chunks de Etapa 3.
     """
-    output_path = tmp_path / "output_e3.jpg"
+    output_path = tmp_path / "output_e3.png"
     
     results = []
     for i in range(4):
