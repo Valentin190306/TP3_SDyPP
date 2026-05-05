@@ -76,7 +76,6 @@ docker compose --profile master run master
 ```
 Puedes observar la reencola en acción viendo los logs de los workers:
 ```bash
-docker compose logs -f worker
 ```
 
 ## Análisis de Performance
