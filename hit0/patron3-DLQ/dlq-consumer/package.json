@@ -1,0 +1,12 @@
+{
+  "name": "dlq-dlq-consumer",
+  "version": "1.0.0",
+  "description": "Consumidor de la Dead Letter Queue (DLQ) con RabbitMQ",
+  "main": "dlq-consumer.js",
+  "scripts": {
+    "start": "node dlq-consumer.js"
+  },
+  "dependencies": {
+    "amqplib": "^0.10.3"
+  }
+}
