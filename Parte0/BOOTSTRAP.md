@@ -98,9 +98,43 @@ sudo k3s ctr images list | grep [nombre-imagen]
 ```
 
 Salida:
+```bash
+docker.io/library/sobel-worker:latest                                                                              application/vnd.oci.image.index.v1+json                   sha256:843a9ad48220e3055fa7f6b6e56c42be295f021cedd6c5885eeb9b5818994781 75.2 MiB  linux/amd64                                                                                            io.cri-containerd.image=managed 
 ```
-docker.io/library/sobel-worker:latest                                                                              application/vnd.oci.image.manifest.v1+json                sha256:f688cb741f1cee58cb5a52a319aa3ce769a8332e04d0f7044302539dcb6726f0 224.7 MiB linux/amd64                                                                                                         io.cri-containerd.image=managed 
+
+## Hello World: deployar nginx para validar que todo funciona
+
+```html
+valentin@Debian:~/Proyectos/TP3_SDyPP$ curl http://localhost:8080
+<!DOCTYPE html>
+<html>
+<head>
+<title>Welcome to nginx!</title>
+<style>
+html { color-scheme: light dark; }
+body { width: 35em; margin: 0 auto;
+font-family: Tahoma, Verdana, Arial, sans-serif; }
+</style>
+</head>
+<body>
+<h1>Welcome to nginx!</h1>
+<p>If you see this page, nginx is successfully installed and working.
+Further configuration is required for the web server, reverse proxy, 
+API gateway, load balancer, content cache, or other features.</p>
+
+<p>For online documentation and support please refer to
+<a href="https://nginx.org/">nginx.org</a>.<br/>
+To engage with the community please visit
+<a href="https://community.nginx.org/">community.nginx.org</a>.<br/>
+For enterprise grade support, professional services, additional 
+security features and capabilities please refer to
+<a href="https://f5.com/nginx">f5.com/nginx</a>.</p>
+
+<p><em>Thank you for using nginx.</em></p>
+</body>
+</html>
 ```
+
 
 ---
 
@@ -134,8 +168,8 @@ Elimina binario, servicio systemd, datos del cluster y redes.
 
 ## Checklist de validación
 
-- [ ] `kubectl get nodes` devuelve el nodo en estado `Ready`
-- [ ] `kubectl get pods -A` no muestra pods en `CrashLoopBackOff` ni `Pending`
-- [ ] Imagen local importada y visible con `k3s ctr images list`
-- [ ] `kubectl version` muestra versión compatible de cliente y servidor
-- [ ] `~/.kube/config` configurado (kubectl funciona sin sudo)
+- [x] `kubectl get nodes` devuelve el nodo en estado `Ready`
+- [x] `kubectl get pods -A` no muestra pods en `CrashLoopBackOff` ni `Pending`
+- [x] Imagen local importada y visible con `k3s ctr images list`
+- [x] `kubectl version` muestra versión compatible de cliente y servidor
+- [x] `~/.kube/config` configurado (kubectl funciona sin sudo)
