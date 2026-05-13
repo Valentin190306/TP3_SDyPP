@@ -6,7 +6,7 @@ import sys
 import random
 import pika
 from logger import get_logger
-from sobel_core import apply_sobel_to_chunk, encode_chunk, decode_chunk
+from sobel_core import apply_sobel_to_array, encode_chunk, decode_chunk
 
 RABBITMQ_HOST = os.environ.get('RABBITMQ_HOST', 'rabbitmq')
 WORKER_ID = os.environ.get('WORKER_ID', socket.gethostname())
@@ -55,8 +55,9 @@ def process_chunk(ch, method, properties, body):
         sys.exit(1)
         
     total_height = chunk_height + overlap_top + overlap_bottom
-    result_b64 = apply_sobel_to_chunk(pixels_b64, width, total_height)
-    result_array = decode_chunk(result_b64, width, total_height)
+    img_array = decode_chunk(pixels_b64, width, total_height)
+    
+    result_array = apply_sobel_to_array(img_array)
     
     row_start = 1 if overlap_top == 1 else 0
     row_end = total_height - (1 if overlap_bottom == 1 else 0)

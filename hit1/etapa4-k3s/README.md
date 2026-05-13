@@ -63,7 +63,13 @@ kubectl apply -f ../etapa4-k3s/k3s/workers.yaml
 
 # 4. Ejecutar el Master (Job)
 kubectl apply -f ../etapa4-k3s/k3s/master.yaml
+
+
+# 5. Volver a correr el master (Job)
+kubectl delete job sobel-master
+kubectl apply -f ../etapa4-k3s/k3s/master.yaml
 ```
+
 
 ### 5. Monitoreo y Resultados
 
@@ -78,6 +84,17 @@ kubectl logs job/sobel-master
 ```
 
 Una vez finalizado el Job, la imagen procesada aparecerá en tu carpeta local definida en el `hostPath` (ej: `images/resultado.jpg`).
+
+### 6. Acceder a la Interfaz de RabbitMQ
+
+El despliegue utiliza la imagen `rabbitmq:3-management`, lo que permite monitorear las colas visualmente. Para acceder desde tu navegador local:
+
+1.  Ejecuta el port-forward:
+    ```bash
+    kubectl port-forward svc/rabbitmq 15672:15672
+    ```
+2.  Abre [http://localhost:15672](http://localhost:15672) en tu navegador.
+3.  Ingresa con el usuario y contraseña por defecto: `guest` / `guest`.
 
 ## Notas Técnicas
 

@@ -56,12 +56,18 @@ def decode_chunk(b64_str: str, width: int, height: int) -> np.ndarray:
     pixels_bytes = base64.b64decode(b64_str)
     return np.frombuffer(pixels_bytes, dtype=np.uint8).reshape((height, width))
 
+def apply_sobel_to_array(img_array: np.ndarray) -> np.ndarray:
+    """
+    Recibe un array numpy (uint8), lo convierte a float32,
+    aplica Sobel y retorna el array resultante (uint8).
+    """
+    img_array_float = img_array.astype(np.float32)
+    return implementar_sobel(img_array_float)
+
 def apply_sobel_to_chunk(pixels_b64: str, width: int, height: int) -> str:
     # Decodificar pixels_b64 desde base64 a bytes y reconstruir numpy array
     img_array = decode_chunk(pixels_b64, width, height)
-    # Convertir a float32
-    img_array_float = img_array.astype(np.float32)
-    # Llamar implementar_sobel()
-    result_array = implementar_sobel(img_array_float)
+    # Aplicar sobel al array
+    result_array = apply_sobel_to_array(img_array)
     # Codificar resultado a base64 y retornar como string
     return encode_chunk(result_array)

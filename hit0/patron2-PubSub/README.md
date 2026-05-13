@@ -23,26 +23,30 @@ A diferencia del patrón punto a punto (Message Queue) donde cada mensaje se enc
 ## Cómo ejecutar
 
 1. **Levantar RabbitMQ y subscribers**: 
-   ```bash
-   docker compose up --scale subscriber=3 -d
-   ```
+```bash
+docker compose up --scale subscriber=3 -d
+```
+
 2. **Esperar healthcheck**: 
-   ```bash
-   docker compose ps
-   ```
-   (Verificar que rabbitmq esté `healthy`)
+```bash
+docker compose ps
+```
+(Verificar que rabbitmq esté `healthy`)
+
 3. **Correr publisher**: 
-   ```bash
-   docker compose run publisher
-   ```
+```bash
+docker compose run publisher
+```
+
 4. **Ver logs**: 
-   ```bash
-   docker compose logs subscriber
-   ```
+```bash
+docker compose logs subscriber
+```
+
 5. **Bajar todo**: 
-   ```bash
-   docker compose down
-   ```
+```bash
+docker compose down
+```
 
 ## Comportamiento observado
 
